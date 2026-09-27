@@ -86,12 +86,12 @@ jobs:
           $m = $m.Replace('#pragma comment(lib, "VMProtectSDK32.lib")', '// VMProtect disabled in CI')
           $m = $m.Replace('#pragma comment(lib, "VMProtectSDK64.lib")', '// VMProtect disabled in CI')
           $m = $m.Replace('#pragma comment(lib, "VMProtectARM64.lib")', '// VMProtect disabled in CI')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBegin(const char *);', 'static __inline void VMP_API VMProtectBegin(const char *) {}')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualization(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualization(const char *) {}')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginMutation(const char *);', 'static __inline void VMP_API VMProtectBeginMutation(const char *) {}')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltra(const char *);', 'static __inline void VMP_API VMProtectBeginUltra(const char *) {}')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualizationLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualizationLockByKey(const char *) {}')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltraLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginUltraLockByKey(const char *) {}')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBegin(const char *);', 'static __inline void VMP_API VMProtectBegin(const char *name) { (void)name; }')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualization(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualization(const char *name) { (void)name; }')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginMutation(const char *);', 'static __inline void VMP_API VMProtectBeginMutation(const char *name) { (void)name; }')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltra(const char *);', 'static __inline void VMP_API VMProtectBeginUltra(const char *name) { (void)name; }')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualizationLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualizationLockByKey(const char *name) { (void)name; }')
+          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltraLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginUltraLockByKey(const char *name) { (void)name; }')
           $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectEnd(void);', 'static __inline void VMP_API VMProtectEnd(void) {}')
           Set-Content -Path $markers -Value $m
 
@@ -115,17 +115,19 @@ jobs:
           "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_NEXUS=$nexus" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "CL=/FI`"$stub`"" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VMP_STUB=$stub" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build WhipSysCall
         shell: pwsh
         run: |
+          $env:CL = "/FI`"$env:VMP_STUB`""
           cmake -S "$env:WHIP_SYS" -B "$env:WHIP_SYS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build "$env:WHIP_SYS/cmake-build-release" --target WhipSysCall --parallel
 
       - name: Build WhipNexus
         shell: pwsh
         run: |
+          $env:CL = "/FI`"$env:VMP_STUB`""
           cmake -S "$env:WHIP_NEXUS" -B "$env:WHIP_NEXUS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build "$env:WHIP_NEXUS/cmake-build-release" --target WhipNexus --parallel
 
