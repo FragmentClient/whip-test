@@ -129,7 +129,8 @@ jobs:
         shell: pwsh
         run: |
           $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
-          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+          $frameworkHeaders = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path.Replace('\','/')
+          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF "-DCMAKE_CXX_FLAGS=/I$frameworkHeaders"
 
       - name: Build WhipClient
         shell: pwsh
