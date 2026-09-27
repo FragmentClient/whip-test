@@ -3,7 +3,7 @@ name: Windows Build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -13,151 +13,96 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout CI repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Checkout Whip source
-        uses: actions/checkout@v4
-        with:
-          repository: astunm/whip-client-source
-          ref: master
-          path: upstream
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Prepare portable dev build
+      - name: Download Whip sources
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = ((Resolve-Path "upstream").Path -replace '\\','/')
-          $sys = "$root/WhipSysCall-master/WhipSysCall-master"
-          $nexus = "$root/WhipNexus-Master/WhipNexus-Master"
-          $anti = "$root/WhipAntiDebug-master/WhipAntiDebug-master"
-          $client = "$root/WhipClient-master/WhipClient-master"
-
-          foreach ($dir in @($sys, $nexus, $anti, $client)) {
-            if (!(Test-Path $dir)) { throw "Missing source directory: $dir" }
+          function Get-MediaFireFile([string]$PageUrl, [string]$Output) {
+            Write-Host "Opening $PageUrl"
+            $headers = @{ "User-Agent" = "Mozilla/5.0" }
+            $page = Invoke-WebRequest -Uri $PageUrl -Headers $headers -UseBasicParsing
+            $m = [regex]::Match($page.Content, 'id="downloadButton"[^>]*href="([^"]+)"')
+            if (-not $m.Success) {
+              $m = [regex]::Match($page.Content, 'href="(https://download[^"]+)"')
+            }
+            if (-not $m.Success) {
+              throw "Could not resolve MediaFire direct download link for $PageUrl"
+            }
+            $url = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+            Write-Host "Downloading to $Output"
+            Invoke-WebRequest -Uri $url -Headers $headers -OutFile $Output
           }
 
-          $stub = "$root/vmp_ci_stub.h"
-          $stubLines = @(
-            "#pragma once",
-            "#ifndef BUILD_WITH_VMPROTECT",
-            "static __inline void VMProtectBegin(const char* name) { (void)name; }",
-            "static __inline void VMProtectBeginVirtualization(const char* name) { (void)name; }",
-            "static __inline void VMProtectBeginMutation(const char* name) { (void)name; }",
-            "static __inline void VMProtectBeginUltra(const char* name) { (void)name; }",
-            "static __inline void VMProtectBeginVirtualizationLockByKey(const char* name) { (void)name; }",
-            "static __inline void VMProtectBeginUltraLockByKey(const char* name) { (void)name; }",
-            "static __inline void VMProtectEnd(void) {}",
-            "#endif"
-          )
-          Set-Content -Path $stub -Value $stubLines
+          New-Item -ItemType Directory -Force external | Out-Null
+          Get-MediaFireFile "https://www.mediafire.com/file/l7qscbgkik2laas/WhipClient.rar/file" "external/WhipClient.rar"
+          Get-MediaFireFile "https://www.mediafire.com/file/6nttk4lsxf8tqx3/WhipLoader.rar/file" "external/WhipLoader.rar"
 
-          # WhipSysCall: portable paths, static CRT and no-op VMProtect markers.
-          $p = "$sys/CMakeLists.txt"
-          $c = Get-Content $p -Raw
-          $c = $c.Replace("/MDd", "/MTd").Replace("/MD", "/MT")
-          $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
-          Set-Content -Path $p -Value $c
+          & "C:\Program Files\7-Zip\7z.exe" x "external/WhipClient.rar" "-oexternal/WhipClient" -y
+          & "C:\Program Files\7-Zip\7z.exe" x "external/WhipLoader.rar" "-oexternal/WhipLoader" -y
 
-          # WhipNexus: consume our local WhipSysCall and disable VMProtect.
-          $p = "$nexus/CMakeLists.txt"
-          $c = Get-Content $p -Raw
-          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\s+CACHE PATH "WhipSysCall directory"\)', "set(WHIPSYSCALL_DIR `"$sys`" CACHE PATH `"WhipSysCall directory`" FORCE)")
-          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\s+CACHE PATH "WhipAntiDebugger directory"\)', "set(WHIPANTIDEBUG_DIR `"$anti`" CACHE PATH `"WhipAntiDebugger directory`" FORCE)")
-          $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
-          Set-Content -Path $p -Value $c
+          Write-Host "Extracted CMake projects:"
+          Get-ChildItem external -Recurse -Filter CMakeLists.txt |
+            ForEach-Object { Write-Host $_.FullName }
 
-          # Sentinel/WhipAntiDebugger headers contain VMProtect auto-link markers.
-          # In this open-source dev build those marker functions are no-ops.
-          $markers = "$anti/antidebug/core/vmp_markers.h"
-          $m = Get-Content $markers -Raw
-          $m = $m.Replace('#pragma comment(lib, "VMProtectSDK32.lib")', '// VMProtect disabled in CI')
-          $m = $m.Replace('#pragma comment(lib, "VMProtectSDK64.lib")', '// VMProtect disabled in CI')
-          $m = $m.Replace('#pragma comment(lib, "VMProtectARM64.lib")', '// VMProtect disabled in CI')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBegin(const char *);', 'static __inline void VMP_API VMProtectBegin(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualization(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualization(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginMutation(const char *);', 'static __inline void VMP_API VMProtectBeginMutation(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltra(const char *);', 'static __inline void VMP_API VMProtectBeginUltra(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualizationLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualizationLockByKey(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltraLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginUltraLockByKey(const char *name) { (void)name; }')
-          $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectEnd(void);', 'static __inline void VMP_API VMProtectEnd(void) {}')
-          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsProtected();', 'static __inline bool VMP_API VMProtectIsProtected(void) { return false; }')
-          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsDebuggerPresent(bool);', 'static __inline bool VMP_API VMProtectIsDebuggerPresent(bool check_kernel_mode) { (void)check_kernel_mode; return false; }')
-          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsVirtualMachinePresent(void);', 'static __inline bool VMP_API VMProtectIsVirtualMachinePresent(void) { return false; }')
-          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsValidImageCRC(void);', 'static __inline bool VMP_API VMProtectIsValidImageCRC(void) { return true; }')
-          $m = $m.Replace('VMP_IMPORT const char * VMP_API VMProtectDecryptStringA(const char *value);', 'static __inline const char * VMP_API VMProtectDecryptStringA(const char *value) { return value; }')
-          $m = $m.Replace('VMP_IMPORT const VMP_WCHAR * VMP_API VMProtectDecryptStringW(const VMP_WCHAR *value);', 'static __inline const VMP_WCHAR * VMP_API VMProtectDecryptStringW(const VMP_WCHAR *value) { return value; }')
-          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectFreeString(const void *value);', 'static __inline bool VMP_API VMProtectFreeString(const void *value) { (void)value; return true; }')
-          Set-Content -Path $markers -Value $m
-
-          # WhipClient: replace old developer-machine paths.
-          $p = "$client/CMakeLists.txt"
-          $c = Get-Content $p -Raw
-          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', "set(WHIPNEXUS_DIR `"$nexus`")")
-          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/Release/WhipNexus.lib")')
-          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', "set(WHIPSYSCALL_DIR `"$sys`")")
-          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', 'set(WHIPSYSCALL_LIB "${WHIPSYSCALL_DIR}/cmake-build-release/WhipSysCall.lib")')
-          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\)', "set(WHIPANTIDEBUG_DIR `"$anti`")")
-          $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
-
-          # DEV_STANDALONE portability: use stb_truetype because this archive ships
-          # FreeType headers but no freetype.lib.
-          $c = $c.Replace('imgui_tables.cpp imgui_widgets.cpp imgui_freetype.cpp', 'imgui_tables.cpp imgui_widgets.cpp')
-
-          # Sentinel is integrated from source. Avoid the missing legacy prebuilt
-          # WhipAntiDebug.lib and compile the two implementation units it needs.
-          $c = [regex]::Replace($c, '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES.*?\)\s*', '')
-          $c = [regex]::Replace($c, '(?m)^\s*WhipAntiDebug\s*$', '')
-          $c += "`ntarget_sources(WhipClient PRIVATE $anti/antidebug/syscall_bridge.cpp $anti/antidebug/tls_callback.c)`n"
-
-          Set-Content -Path $p -Value $c
-
-          "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "WHIP_NEXUS=$nexus" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VMP_STUB=$stub" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Build WhipSysCall
+      - name: Locate client
+        id: locate
         shell: pwsh
         run: |
-          $env:CL = "/FI`"$env:VMP_STUB`""
-          cmake -S "$env:WHIP_SYS" -B "$env:WHIP_SYS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$env:WHIP_SYS/cmake-build-release" --target WhipSysCall --parallel
+          $candidate = Get-ChildItem external/WhipClient -Recurse -Filter CMakeLists.txt |
+            Where-Object { (Get-Content $_.FullName -Raw) -match 'project\(WhipClient' } |
+            Select-Object -First 1
+          if (-not $candidate) { throw "WhipClient CMakeLists.txt not found after extraction." }
+          $dir = $candidate.Directory.FullName
+          Write-Host "WhipClient source: $dir"
+          "client_dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Build WhipNexus
+      - name: Inspect dependencies
         shell: pwsh
         run: |
-          $env:CL = "/FI`"$env:VMP_STUB`""
-          cmake -S "$env:WHIP_NEXUS" -B "$env:WHIP_NEXUS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$env:WHIP_NEXUS/cmake-build-release" --target WhipNexus --parallel
+          $client = "${{ steps.locate.outputs.client_dir }}"
+          Write-Host "Client directory: $client"
+          foreach ($name in @("WhipNexus","WhipSysCall","WhipAntiDebug","WhipAntiDebugger")) {
+            Write-Host "---- searching $name ----"
+            Get-ChildItem external -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like "*$name*" } |
+              Select-Object -First 20 -ExpandProperty FullName |
+              ForEach-Object { Write-Host $_ }
+          }
 
-      - name: Configure WhipClient
+      - name: Configure client
         shell: pwsh
         run: |
-          cmake -S "$env:WHIP_CLIENT" -B build-client -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+          $client = "${{ steps.locate.outputs.client_dir }}"
+          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
 
-      - name: Build WhipClient
+      - name: Build client
         shell: pwsh
         run: |
-          cmake --build build-client --target WhipClient --parallel
+          cmake --build build --config Release --parallel
+
+      - name: Collect DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          $dll = Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1
+          if (-not $dll) { throw "WhipClient.dll was not produced." }
+          Copy-Item $dll.FullName artifact/WhipClient.dll
+          $pdb = Get-ChildItem build -Recurse -Filter WhipClient.pdb | Select-Object -First 1
+          if ($pdb) { Copy-Item $pdb.FullName artifact/WhipClient.pdb }
 
       - name: Upload WhipClient
         uses: actions/upload-artifact@v4
         with:
           name: WhipClient-Windows
-          path: |
-            build-client/bin/WhipClient.dll
-            build-client/bin/WhipClient.pdb
+          path: artifact/
           if-no-files-found: error
