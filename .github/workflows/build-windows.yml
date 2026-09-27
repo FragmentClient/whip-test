@@ -93,6 +93,13 @@ jobs:
           $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualizationLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualizationLockByKey(const char *name) { (void)name; }')
           $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltraLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginUltraLockByKey(const char *name) { (void)name; }')
           $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectEnd(void);', 'static __inline void VMP_API VMProtectEnd(void) {}')
+          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsProtected();', 'static __inline bool VMP_API VMProtectIsProtected(void) { return false; }')
+          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsDebuggerPresent(bool);', 'static __inline bool VMP_API VMProtectIsDebuggerPresent(bool check_kernel_mode) { (void)check_kernel_mode; return false; }')
+          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsVirtualMachinePresent(void);', 'static __inline bool VMP_API VMProtectIsVirtualMachinePresent(void) { return false; }')
+          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectIsValidImageCRC(void);', 'static __inline bool VMP_API VMProtectIsValidImageCRC(void) { return true; }')
+          $m = $m.Replace('VMP_IMPORT const char * VMP_API VMProtectDecryptStringA(const char *value);', 'static __inline const char * VMP_API VMProtectDecryptStringA(const char *value) { return value; }')
+          $m = $m.Replace('VMP_IMPORT const VMP_WCHAR * VMP_API VMProtectDecryptStringW(const VMP_WCHAR *value);', 'static __inline const VMP_WCHAR * VMP_API VMProtectDecryptStringW(const VMP_WCHAR *value) { return value; }')
+          $m = $m.Replace('VMP_IMPORT bool VMP_API VMProtectFreeString(const void *value);', 'static __inline bool VMP_API VMProtectFreeString(const void *value) { (void)value; return true; }')
           Set-Content -Path $markers -Value $m
 
           # WhipClient: replace old developer-machine paths.
@@ -108,7 +115,47 @@ jobs:
           # The current client integrates Sentinel from source; do not require the
           # old prebuilt WhipAntiDebug.lib which is absent from a clean runner.
           $c = [regex]::Replace($c, '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES.*?\)\s*', '')
-          $c = [regex]::Replace($c, '(?m)^\s*WhipAntiDebug\s*$', '')
+          $c = [regex]::Replace($c, '(?m)^\s*WhipAntiDebug\s*
+
+          "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_NEXUS=$nexus" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VMP_STUB=$stub" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build WhipSysCall
+        shell: pwsh
+        run: |
+          $env:CL = "/FI`"$env:VMP_STUB`""
+          cmake -S "$env:WHIP_SYS" -B "$env:WHIP_SYS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_SYS/cmake-build-release" --target WhipSysCall --parallel
+
+      - name: Build WhipNexus
+        shell: pwsh
+        run: |
+          $env:CL = "/FI`"$env:VMP_STUB`""
+          cmake -S "$env:WHIP_NEXUS" -B "$env:WHIP_NEXUS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_NEXUS/cmake-build-release" --target WhipNexus --parallel
+
+      - name: Configure WhipClient
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_CLIENT" -B build-client -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build WhipClient
+        shell: pwsh
+        run: |
+          cmake --build build-client --target WhipClient --parallel
+
+      - name: Upload WhipClient
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Windows
+          path: |
+            build-client/bin/WhipClient.dll
+            build-client/bin/WhipClient.pdb
+          if-no-files-found: error
+, '')
+          $c += "`ntarget_sources(\${PROJECT_NAME} PRIVATE `"\${WHIPANTIDEBUG_DIR}/antidebug/syscall_bridge.cpp`" `"\${WHIPANTIDEBUG_DIR}/antidebug/tls_callback.c`")`n"
 
           Set-Content -Path $p -Value $c
 
