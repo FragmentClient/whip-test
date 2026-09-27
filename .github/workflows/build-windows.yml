@@ -30,6 +30,11 @@ jobs:
         shell: pwsh
         run: |
           $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $invoker = Join-Path $sys "src/SyscallInvoker.cpp"
+          $src = Get-Content $invoker -Raw
+          $src = $src.Replace('VMProtectBeginMutation("SyscallInvokerImpl_SyscallShellcode_SetSSN");','')
+          $src = $src.Replace('VMProtectEnd();','')
+          Set-Content -Path $invoker -Value $src -Encoding utf8
           cmake -S "$sys" -B deps-build/syscall -G "Visual Studio 17 2022" -A x64
           cmake --build deps-build/syscall --config Release --parallel
           $lib = Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1
