@@ -39,7 +39,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = (Resolve-Path "upstream").Path.Replace("\\", "/")
+          $root = ((Resolve-Path "upstream").Path -replace '\\\\','/')
           $sys = "$root/WhipSysCall-master/WhipSysCall-master"
           $nexus = "$root/WhipNexus-Master/WhipNexus-Master"
           $anti = "$root/WhipAntiDebug-master/WhipAntiDebug-master"
@@ -69,7 +69,6 @@ jobs:
           $c = Get-Content $p -Raw
           $c = $c.Replace("/MDd", "/MTd").Replace("/MD", "/MT")
           $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
-          $c += "`nif(MSVC)`n  add_compile_options(\`$<\`$<COMPILE_LANGUAGE:CXX>:/FI`"$stub`">)`nendif()`n"
           Set-Content -Path $p -Value $c
 
           # WhipNexus: consume our local WhipSysCall and disable VMProtect.
@@ -78,7 +77,6 @@ jobs:
           $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\s+CACHE PATH "WhipSysCall directory"\)', "set(WHIPSYSCALL_DIR `"$sys`" CACHE PATH `"WhipSysCall directory`" FORCE)")
           $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\s+CACHE PATH "WhipAntiDebugger directory"\)', "set(WHIPANTIDEBUG_DIR `"$anti`" CACHE PATH `"WhipAntiDebugger directory`" FORCE)")
           $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
-          $c += "`nif(MSVC)`n  add_compile_options(\`$<\`$<COMPILE_LANGUAGE:CXX>:/FI`"$stub`">)`nendif()`n"
           Set-Content -Path $p -Value $c
 
           # Sentinel/WhipAntiDebugger headers contain VMProtect auto-link markers.
@@ -117,6 +115,7 @@ jobs:
           "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_NEXUS=$nexus" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CL=/FI`"$stub`"" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build WhipSysCall
         shell: pwsh
