@@ -82,6 +82,12 @@ jobs:
           # Replace hard-coded developer paths with CI paths.
           $cmakePath = Join-Path $client "CMakeLists.txt"
           $cm = Get-Content $cmakePath -Raw
+
+          # FreeType is not enabled in imconfig.h; the project nevertheless adds
+          # imgui_freetype.cpp, which requires a freetype.lib that is not shipped.
+          # Dev standalone uses ImGui's built-in stb_truetype backend instead.
+          $cm = $cm.Replace('imgui_tables.cpp imgui_widgets.cpp imgui_freetype.cpp',
+                            'imgui_tables.cpp imgui_widgets.cpp')
           $nx = $nexus.Replace('\','/')
           $sy = $sys.Replace('\','/')
           $nl = $nexusLib.Replace('\','/')
