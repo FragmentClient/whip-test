@@ -71,13 +71,86 @@ jobs:
         run: |
           $client = "${{ steps.locate.outputs.client_dir }}"
           Write-Host "Client directory: $client"
-          foreach ($name in @("WhipNexus","WhipSysCall","WhipAntiDebug","WhipAntiDebugger")) {
-            Write-Host "---- searching $name ----"
-            Get-ChildItem external -Recurse -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like "*$name*" } |
-              Select-Object -First 20 -ExpandProperty FullName |
-              ForEach-Object { Write-Host $_ }
-          }
+
+          Write-Host "==== dependency headers ===="
+          Get-ChildItem external -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(WhipNexus|WhipSysCall|SyscallManager|WhipAnti.*|Sentinel).*\.(h|hpp)
+      - name: Configure client
+        shell: pwsh
+        run: |
+          $client = "${{ steps.locate.outputs.client_dir }}"
+          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build client
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Collect DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          $dll = Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1
+          if (-not $dll) { throw "WhipClient.dll was not produced." }
+          Copy-Item $dll.FullName artifact/WhipClient.dll
+          $pdb = Get-ChildItem build -Recurse -Filter WhipClient.pdb | Select-Object -First 1
+          if ($pdb) { Copy-Item $pdb.FullName artifact/WhipClient.pdb }
+
+      - name: Upload WhipClient
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Windows
+          path: artifact/
+          if-no-files-found: error
+ } |
+            Select-Object -First 100 -ExpandProperty FullName |
+            ForEach-Object { Write-Host $_ }
+
+          Write-Host "==== dependency libraries ===="
+          Get-ChildItem external -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(WhipNexus|WhipSysCall|WhipAnti.*)\.lib
+      - name: Configure client
+        shell: pwsh
+        run: |
+          $client = "${{ steps.locate.outputs.client_dir }}"
+          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build client
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Collect DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          $dll = Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1
+          if (-not $dll) { throw "WhipClient.dll was not produced." }
+          Copy-Item $dll.FullName artifact/WhipClient.dll
+          $pdb = Get-ChildItem build -Recurse -Filter WhipClient.pdb | Select-Object -First 1
+          if ($pdb) { Copy-Item $pdb.FullName artifact/WhipClient.pdb }
+
+      - name: Upload WhipClient
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Windows
+          path: artifact/
+          if-no-files-found: error
+ } |
+            Select-Object -First 100 -ExpandProperty FullName |
+            ForEach-Object { Write-Host $_ }
+
+          Write-Host "==== likely dependency directories ===="
+          Get-ChildItem external -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'Whip(Nexus|SysCall|AntiDebug|AntiDebugger)' } |
+            Select-Object -First 100 -ExpandProperty FullName |
+            ForEach-Object { Write-Host $_ }
+
+          # Old project files use absolute D:/Whip paths. Create the root so
+          # CMake can continue far enough to expose the next missing dependency.
+          New-Item -ItemType Directory -Force "D:/Whip/WhipAntiDebug" | Out-Null
+          New-Item -ItemType Directory -Force "D:/Whip/WhipNexus" | Out-Null
+          New-Item -ItemType Directory -Force "D:/Whip/WhipSysCall" | Out-Null
 
       - name: Configure client
         shell: pwsh
