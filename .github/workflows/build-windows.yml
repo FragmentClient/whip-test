@@ -228,10 +228,12 @@ jobs:
 
           # The anti-debug framework declares whip_bridge_resolve in headers but
           # its C++ implementation is not part of the loader target by default.
-          $bridgeCpp = ($ad + '/antidebug/syscall_bridge.cpp')
+          $bridgeCppSrc = Join-Path $anti "antidebug/syscall_bridge.cpp"
+          $bridgeCppDst = Join-Path $loader "src/security/syscall_bridge.cpp"
+          Copy-Item $bridgeCppSrc $bridgeCppDst -Force
           $cm = $cm.Replace(
             'set(WHIP_SOURCES',
-            ('set(WHIP_SOURCES' + [Environment]::NewLine + '    "' + $bridgeCpp + '"')
+            ('set(WHIP_SOURCES' + [Environment]::NewLine + '    src/security/syscall_bridge.cpp')
           )
 
           Set-Content -Path $cmakePath -Value $cm -Encoding utf8
