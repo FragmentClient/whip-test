@@ -39,7 +39,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = ((Resolve-Path "upstream").Path -replace '\\\\','/')
+          $root = ((Resolve-Path "upstream").Path -replace '\\','/')
           $sys = "$root/WhipSysCall-master/WhipSysCall-master"
           $nexus = "$root/WhipNexus-Master/WhipNexus-Master"
           $anti = "$root/WhipAntiDebug-master/WhipAntiDebug-master"
