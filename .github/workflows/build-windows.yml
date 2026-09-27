@@ -1,0 +1,50 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check source tree
+        shell: pwsh
+        run: |
+          if (!(Test-Path "WhipClient/CMakeLists.txt")) {
+            throw "WhipClient sources are not present in the repository yet."
+          }
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S WhipClient -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Upload WhipClient
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Windows
+          path: |
+            build/bin/Release/WhipClient.dll
+            build/bin/WhipClient.dll
+            build/bin/Release/WhipClient.pdb
+            build/bin/WhipClient.pdb
+          if-no-files-found: error
