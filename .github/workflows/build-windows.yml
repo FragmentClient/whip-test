@@ -54,7 +54,7 @@ jobs:
           $cm = $cm.Replace('../WhipSysCall/include', ($sy + '/include'))
           $cm = $cm.Replace('${CMAKE_CURRENT_SOURCE_DIR}/../WhipSysCall/cmake-build-release/WhipSysCall.lib', ($sy + '/cmake-build-release/WhipSysCall.lib'))
           Set-Content -Path $cmakePath -Value $cm -Encoding utf8
-          cmake -S "$mmap" -B deps-build/mmap -G "Visual Studio 17 2022" -A x64
+          cmake -S "$mmap" -B deps-build/mmap -G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build deps-build/mmap --config Release --parallel
           $lib = Get-ChildItem deps-build/mmap -Recurse -Filter WhipMmap.lib | Select-Object -First 1
           if (-not $lib) { throw "WhipMmap.lib was not produced" }
@@ -124,6 +124,15 @@ jobs:
           void sentinel_bridge_recheck(void) {}
           void sentinel_bridge_verify(void) {}
           unsigned long long sentinel_bridge_snapshot(void) { return 0ULL; }
+          unsigned int sentinel_bridge_score(void) { return 0u; }
+          unsigned int sentinel_bridge_checks_run(void) { return 0u; }
+          unsigned int sentinel_bridge_checks_hit(void) { return 0u; }
+          int sentinel_bridge_re_detect(void) { return 0; }
+          unsigned int sentinel_bridge_redetect_mask(void) { return 0u; }
+          unsigned int sentinel_bridge_get_hit_flags(void) { return 0u; }
+          void sentinel_bridge_get_layer_report(char* buf, unsigned int buflen) {
+              if (buf && buflen) buf[0] = 0;
+          }
           int sentinel_bridge_consume_report(char* outText, unsigned int outCap,
                                              unsigned int* score, unsigned int* checksRun,
                                              unsigned int* checksHit, unsigned int* checkMask,
@@ -216,6 +225,15 @@ jobs:
           }
           '@
           Set-Content -Path (Join-Path $loader "src/security/Sentinel_bridge.c") -Value $bridge -Encoding utf8
+
+          # The anti-debug framework declares whip_bridge_resolve in headers but
+          # its C++ implementation is not part of the loader target by default.
+          $bridgeCpp = ($ad + '/antidebug/syscall_bridge.cpp')
+          $cm = $cm.Replace(
+            'set(WHIP_SOURCES',
+            ('set(WHIP_SOURCES' + [Environment]::NewLine + '    "' + $bridgeCpp + '"')
+          )
+
           Set-Content -Path $cmakePath -Value $cm -Encoding utf8
 
       - name: Configure WhipLoader
