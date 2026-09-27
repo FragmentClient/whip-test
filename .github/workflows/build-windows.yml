@@ -55,6 +55,29 @@ jobs:
                           'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
           Set-Content $p $c -NoNewline
 
+          # Minimal VMProtect no-op shim for open-source/dev builds.
+          $stub = "$root/vmp_ci_stub.h"
+          @'
+#pragma once
+#ifndef BUILD_WITH_VMPROTECT
+static __inline void VMProtectBegin(const char*) {}
+static __inline void VMProtectBeginVirtualization(const char*) {}
+static __inline void VMProtectBeginMutation(const char*) {}
+static __inline void VMProtectBeginUltra(const char*) {}
+static __inline void VMProtectBeginVirtualizationLockByKey(const char*) {}
+static __inline void VMProtectBeginUltraLockByKey(const char*) {}
+static __inline void VMProtectEnd(void) {}
+#endif
+'@ | Set-Content $stub -NoNewline
+
+          Add-Content "$sys/CMakeLists.txt" @"
+
+# CI portability shim
+if(MSVC)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/FI"$stub">)
+endif()
+"@
+
           # WhipNexus: point at the checked-out WhipSysCall and disable VMProtect.
           $p = "$nexus/CMakeLists.txt"
           $c = Get-Content $p -Raw
@@ -65,6 +88,13 @@ jobs:
           $c = $c.Replace('set(VMPROTECT_SDK_PATH "C:/Users/Java/Desktop/VMP")',
                           'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
           Set-Content $p $c -NoNewline
+          Add-Content "$nexus/CMakeLists.txt" @"
+
+# CI portability shim
+if(MSVC)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/FI"$stub">)
+endif()
+"@
 
           # WhipAntiDebug: use local WhipSysCall and remove the unavailable proprietary VMP link.
           $p = "$anti/CMakeLists.txt"
@@ -83,12 +113,68 @@ jobs:
             $m = $m.Replace('#pragma comment(lib, "VMProtectSDK64.lib")', '// VMProtect disabled in CI')
             $m = $m.Replace('#pragma comment(lib, "VMProtectSDK32.lib")', '// VMProtect disabled in CI')
             $m = $m.Replace('#pragma comment(lib, "VMProtectARM64.lib")', '// VMProtect disabled in CI')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBegin(const char *);', 'static __inline void VMP_API VMProtectBegin(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualization(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualization(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginMutation(const char *);', 'static __inline void VMP_API VMProtectBeginMutation(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltra(const char *);', 'static __inline void VMP_API VMProtectBeginUltra(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginVirtualizationLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginVirtualizationLockByKey(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectBeginUltraLockByKey(const char *);', 'static __inline void VMP_API VMProtectBeginUltraLockByKey(const char *) {}')
+            $m = $m.Replace('VMP_IMPORT void VMP_API VMProtectEnd(void);', 'static __inline void VMP_API VMProtectEnd(void) {}')
             Set-Content $markers $m -NoNewline
           }
 
           # WhipClient: replace developer-machine paths with CI-local dependencies.
           $p = "$client/CMakeLists.txt"
           $c = Get-Content $p -Raw
+          $c = [regex]::Replace($c, '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\).*?INTERFACE_INCLUDE_DIRECTORIES "\$\{WHIPANTIDEBUG_DIR\}"\s*\)', '')
+          $c = [regex]::Replace($c, '(?m)^\s*WhipAntiDebug\s*\s+"[^"]+"\)', "set(WHIPNEXUS_DIR `"$nexus`")")
+          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/WhipNexus.lib")')
+          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', "set(WHIPSYSCALL_DIR `"$sys`")")
+          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', 'set(WHIPSYSCALL_LIB "${WHIPSYSCALL_DIR}/cmake-build-release/WhipSysCall.lib")')
+          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\)', "set(WHIPANTIDEBUG_DIR `"$anti`")")
+          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_LIB\s+"[^"]+"\)', 'set(WHIPANTIDEBUG_LIB "${WHIPANTIDEBUG_DIR}/cmake-build-release/WhipAntiDebugger.lib")')
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH  "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH  "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          Set-Content $p $c -NoNewline
+
+          "WHIP_SYS=$sys"       | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_NEXUS=$nexus"   | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_ANTI=$anti"     | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build WhipSysCall
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_SYS" -B "$env:WHIP_SYS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_SYS/cmake-build-release" --target WhipSysCall --parallel
+
+      - name: Build WhipNexus
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_NEXUS" -B "$env:WHIP_NEXUS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_NEXUS/cmake-build-release" --target WhipNexus --parallel
+
+      - name: Configure WhipClient
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_CLIENT" -B build-client -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build WhipClient
+        shell: pwsh
+        run: |
+          cmake --build build-client --target WhipClient --parallel
+
+      - name: Upload WhipClient
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Windows
+          path: |
+            build-client/bin/WhipClient.dll
+            build-client/bin/WhipClient.pdb
+          if-no-files-found: error
+, '')
           $c = [regex]::Replace($c, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', "set(WHIPNEXUS_DIR `"$nexus`")")
           $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/WhipNexus.lib")')
           $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', "set(WHIPSYSCALL_DIR `"$sys`")")
