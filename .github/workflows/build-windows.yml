@@ -43,6 +43,23 @@ jobs:
           Copy-Item $lib.FullName "$sys/cmake-build-release/WhipSysCall.lib" -Force
           Write-Host "WhipSysCall: $($lib.FullName)"
 
+      - name: Build WhipMmap
+        shell: pwsh
+        run: |
+          $mmap = (Resolve-Path "upstream/WhipMmap-master/WhipMmap-master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $cmakePath = Join-Path $mmap "CMakeLists.txt"
+          $cm = Get-Content $cmakePath -Raw
+          $sy = $sys.Replace('\','/')
+          $cm = $cm.Replace('../WhipSysCall/include', ($sy + '/include'))
+          $cm = $cm.Replace('${CMAKE_CURRENT_SOURCE_DIR}/../WhipSysCall/cmake-build-release/WhipSysCall.lib', ($sy + '/cmake-build-release/WhipSysCall.lib'))
+          Set-Content -Path $cmakePath -Value $cm -Encoding utf8
+          cmake -S "$mmap" -B deps-build/mmap -G "Visual Studio 17 2022" -A x64
+          cmake --build deps-build/mmap --config Release --parallel
+          $lib = Get-ChildItem deps-build/mmap -Recurse -Filter WhipMmap.lib | Select-Object -First 1
+          if (-not $lib) { throw "WhipMmap.lib was not produced" }
+          Write-Host "WhipMmap: $($lib.FullName)"
+
       - name: Build WhipNexus
         shell: pwsh
         run: |
@@ -131,22 +148,94 @@ jobs:
           Set-Content -Path $cmakePath -Value $cm -Encoding utf8
           Write-Host "Portable client prepared at $client"
 
-      - name: Configure WhipClient
+      - name: Configure WhipClient for Loader
         shell: pwsh
         run: |
           $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
           $frameworkHeaders = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path.Replace('\','/')
-          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF "-DCMAKE_CXX_FLAGS=/I$frameworkHeaders"
+          cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_WITH_LOADER -DBUILD_WITH_VMPROTECT=OFF "-DCMAKE_CXX_FLAGS=/I$frameworkHeaders"
 
       - name: Build WhipClient
         shell: pwsh
         run: |
           cmake --build build --config Release --parallel
 
+      - name: Prepare portable WhipLoader
+        shell: pwsh
+        run: |
+          $loader = (Resolve-Path "upstream/WhipLoader-master/WhipLoader-master").Path
+          $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $mmap = (Resolve-Path "upstream/WhipMmap-master/WhipMmap-master").Path
+          $anti = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path
+          $clientDll = (Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1).FullName
+          $nexusLib = (Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1).FullName
+          $sysLib = (Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1).FullName
+          $mmapLib = (Get-ChildItem deps-build/mmap -Recurse -Filter WhipMmap.lib | Select-Object -First 1).FullName
+          if (-not $clientDll) { throw "WhipClient.dll missing before loader build" }
+
+          $cmakePath = Join-Path $loader "CMakeLists.txt"
+          $cm = Get-Content $cmakePath -Raw
+          $nx=$nexus.Replace('\','/'); $sy=$sys.Replace('\','/'); $mm=$mmap.Replace('\','/'); $ad=$anti.Replace('\','/')
+          $nl=$nexusLib.Replace('\','/'); $sl=$sysLib.Replace('\','/'); $ml=$mmapLib.Replace('\','/'); $cd=$clientDll.Replace('\','/')
+
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_DIR\s+"[^"]+"[^\)]*\)', ('set(WHIPNEXUS_DIR "'+$nx+'" CACHE PATH "WhipNexus directory" FORCE)'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"[^\)]*\)', ('set(WHIPSYSCALL_DIR "'+$sy+'" CACHE PATH "WhipSysCall directory" FORCE)'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPMMAP_DIR\s+"[^"]+"[^\)]*\)', ('set(WHIPMMAP_DIR "'+$mm+'" CACHE PATH "WhipMmap directory" FORCE)'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"[^\)]*\)', ('set(WHIPANTIDEBUG_DIR "'+$ad+'" CACHE PATH "WhipAntiDebugger directory" FORCE)'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', ('set(WHIPNEXUS_LIB "'+$nl+'")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', ('set(WHIPSYSCALL_LIB "'+$sl+'")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPMMAP_LIB\s+"[^"]+"\)', ('set(WHIPMMAP_LIB "'+$ml+'")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPCLIENT_DLL\s+"[^"]+"\s*CACHE FILEPATH "Path to WhipClient\.dll for LOCAL mode" FORCE\)', ('set(WHIPCLIENT_DLL "'+$cd+'" CACHE FILEPATH "Path to WhipClient.dll for LOCAL mode" FORCE)'))
+
+          $cm = [regex]::Replace(
+            $cm,
+            '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES\s*IMPORTED_LOCATION "[^"]*"\s*INTERFACE_INCLUDE_DIRECTORIES "[^"]*"\s*\)',
+            ('add_library(WhipAntiDebug INTERFACE)' + [Environment]::NewLine + 'target_include_directories(WhipAntiDebug INTERFACE "'+$ad+'")')
+          )
+
+          $bridge = @'
+          #include <stdint.h>
+          void sentinel_bridge_init(void) {}
+          void sentinel_bridge_cleanup(void) {}
+          void sentinel_bridge_taint(unsigned char* data, unsigned int length) { (void)data; (void)length; }
+          void sentinel_bridge_recheck(void) {}
+          void sentinel_bridge_verify(void) {}
+          unsigned long long sentinel_bridge_snapshot(void) { return 0ULL; }
+          int sentinel_bridge_consume_report(char* outText, unsigned int outCap,
+                                             unsigned int* score, unsigned int* checksRun,
+                                             unsigned int* checksHit, unsigned int* checkMask,
+                                             unsigned int* flags) {
+              if (outText && outCap) outText[0] = 0;
+              if (score) *score = 0; if (checksRun) *checksRun = 0;
+              if (checksHit) *checksHit = 0; if (checkMask) *checkMask = 0;
+              if (flags) *flags = 0; return 0;
+          }
+          int sentinel_bridge_attach_poll(unsigned int* outReason) {
+              if (outReason) *outReason = 0; return 0;
+          }
+          '@
+          Set-Content -Path (Join-Path $loader "src/security/Sentinel_bridge.c") -Value $bridge -Encoding utf8
+          Set-Content -Path $cmakePath -Value $cm -Encoding utf8
+
+      - name: Configure WhipLoader
+        shell: pwsh
+        run: |
+          $loader = (Resolve-Path "upstream/WhipLoader-master/WhipLoader-master").Path
+          cmake -S "$loader" -B build-loader -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=LOCAL -DWHIP_BYPASS_MODE=OFF -DWHIP_UI_IMGUI=OFF
+
+      - name: Build WhipLoader
+        shell: pwsh
+        run: |
+          cmake --build build-loader --config Release --parallel
+
       - name: Collect artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
+          $exe = Get-ChildItem build-loader -Recurse -Filter WhipLoader.exe | Select-Object -First 1
+          if (-not $exe) { throw "WhipLoader.exe was not produced" }
+          Copy-Item $exe.FullName artifact/WhipLoader.exe -Force
           $dll = Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1
           if (-not $dll) { throw "WhipClient.dll was not produced" }
           Copy-Item $dll.FullName artifact/WhipClient.dll
@@ -154,9 +243,9 @@ jobs:
           if ($pdb) { Copy-Item $pdb.FullName artifact/WhipClient.pdb }
           Get-ChildItem artifact
 
-      - name: Upload WhipClient
+      - name: Upload Whip Local Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: WhipClient-Windows
+          name: Whip-Local-Windows
           path: artifact/
           if-no-files-found: error
