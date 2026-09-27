@@ -12,15 +12,15 @@ jobs:
   build:
     runs-on: windows-2022
     steps:
-      - name: Checkout
+      - name: Checkout CI repository
         uses: actions/checkout@v4
 
-      - name: Check source tree
-        shell: pwsh
-        run: |
-          if (!(Test-Path "WhipClient/CMakeLists.txt")) {
-            throw "WhipClient sources are not present in the repository yet."
-          }
+      - name: Checkout Whip source
+        uses: actions/checkout@v4
+        with:
+          repository: astunm/whip-client-source
+          ref: master
+          path: upstream
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -28,23 +28,112 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure
+      - name: Prepare portable source tree
         shell: pwsh
         run: |
-          cmake -S WhipClient -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+          $ErrorActionPreference = "Stop"
+          $root   = (Resolve-Path "upstream").Path.Replace("\\","/")
+          $sys    = "$root/WhipSysCall-master/WhipSysCall-master"
+          $nexus  = "$root/WhipNexus-Master/WhipNexus-Master"
+          $anti   = "$root/WhipAntiDebug-master/WhipAntiDebug-master"
+          $client = "$root/WhipClient-master/WhipClient-master"
 
-      - name: Build
+          foreach ($p in @($sys,$nexus,$anti,$client)) {
+            if (!(Test-Path $p)) { throw "Missing source directory: $p" }
+          }
+
+          # WhipSysCall: use the same static MSVC runtime as WhipClient.
+          $p = "$sys/CMakeLists.txt"
+          $c = Get-Content $p -Raw
+          $c = $c.Replace("/MDd", "/MTd").Replace("/MD", "/MT")
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          Set-Content $p $c -NoNewline
+
+          # WhipNexus: point at the checked-out WhipSysCall and disable VMProtect.
+          $p = "$nexus/CMakeLists.txt"
+          $c = Get-Content $p -Raw
+          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\s+CACHE PATH "WhipSysCall directory"\)',
+                                     "set(WHIPSYSCALL_DIR `"$sys`" CACHE PATH `"WhipSysCall directory`" FORCE)")
+          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\s+CACHE PATH "WhipAntiDebugger directory"\)',
+                                     "set(WHIPANTIDEBUG_DIR `"$anti`" CACHE PATH `"WhipAntiDebugger directory`" FORCE)")
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          Set-Content $p $c -NoNewline
+
+          # WhipAntiDebug: use local WhipSysCall and remove the unavailable proprietary VMP link.
+          $p = "$anti/CMakeLists.txt"
+          $c = Get-Content $p -Raw
+          $c = $c.Replace('set(WHIPSYSCALL_ROOT "C:/Users/Java/Desktop/whip/WhipSysCall")',
+                          "set(WHIPSYSCALL_ROOT `"$sys`")")
+          $c = $c.Replace('set(VMP_ROOT "C:/Users/Java/Desktop/VMP")',
+                          'set(VMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          $c = [regex]::Replace($c, '(?m)^\s*target_link_directories\(WhipAntiDebugger PUBLIC "\$\{VMP_ROOT\}"\)\s*$', '')
+          $c = [regex]::Replace($c, '(?m)^\s*target_link_libraries\(WhipAntiDebugger PUBLIC VMProtectSDK64\.lib\)\s*$', '')
+          Set-Content $p $c -NoNewline
+
+          $markers = "$anti/antidebug/core/vmp_markers.h"
+          if (Test-Path $markers) {
+            $m = Get-Content $markers -Raw
+            $m = $m.Replace('#pragma comment(lib, "VMProtectSDK64.lib")', '// VMProtect disabled in CI')
+            $m = $m.Replace('#pragma comment(lib, "VMProtectSDK32.lib")', '// VMProtect disabled in CI')
+            $m = $m.Replace('#pragma comment(lib, "VMProtectARM64.lib")', '// VMProtect disabled in CI')
+            Set-Content $markers $m -NoNewline
+          }
+
+          # WhipClient: replace developer-machine paths with CI-local dependencies.
+          $p = "$client/CMakeLists.txt"
+          $c = Get-Content $p -Raw
+          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', "set(WHIPNEXUS_DIR `"$nexus`")")
+          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/WhipNexus.lib")')
+          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', "set(WHIPSYSCALL_DIR `"$sys`")")
+          $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', 'set(WHIPSYSCALL_LIB "${WHIPSYSCALL_DIR}/cmake-build-release/WhipSysCall.lib")')
+          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\)', "set(WHIPANTIDEBUG_DIR `"$anti`")")
+          $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_LIB\s+"[^"]+"\)', 'set(WHIPANTIDEBUG_LIB "${WHIPANTIDEBUG_DIR}/cmake-build-release/WhipAntiDebugger.lib")')
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH  "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          $c = $c.Replace('set(VMPROTECT_SDK_PATH  "C:/Users/Java/Desktop/VMP")',
+                          'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
+          Set-Content $p $c -NoNewline
+
+          "WHIP_SYS=$sys"       | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_NEXUS=$nexus"   | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_ANTI=$anti"     | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build WhipSysCall
         shell: pwsh
         run: |
-          cmake --build build --config Release --parallel
+          cmake -S "$env:WHIP_SYS" -B "$env:WHIP_SYS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_SYS/cmake-build-release" --target WhipSysCall --parallel
+
+      - name: Build WhipNexus
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_NEXUS" -B "$env:WHIP_NEXUS/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_NEXUS/cmake-build-release" --target WhipNexus --parallel
+
+      - name: Build WhipAntiDebug
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_ANTI" -B "$env:WHIP_ANTI/cmake-build-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$env:WHIP_ANTI/cmake-build-release" --target WhipAntiDebugger --parallel
+
+      - name: Configure WhipClient
+        shell: pwsh
+        run: |
+          cmake -S "$env:WHIP_CLIENT" -B build-client -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
+
+      - name: Build WhipClient
+        shell: pwsh
+        run: |
+          cmake --build build-client --target WhipClient --parallel
 
       - name: Upload WhipClient
         uses: actions/upload-artifact@v4
         with:
           name: WhipClient-Windows
           path: |
-            build/bin/Release/WhipClient.dll
-            build/bin/WhipClient.dll
-            build/bin/Release/WhipClient.pdb
-            build/bin/WhipClient.pdb
+            build-client/bin/WhipClient.dll
+            build-client/bin/WhipClient.pdb
           if-no-files-found: error
