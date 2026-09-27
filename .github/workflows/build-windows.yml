@@ -112,12 +112,7 @@ jobs:
           $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\)', "set(WHIPANTIDEBUG_DIR `"$anti`")")
           $c = [regex]::Replace($c, 'set\(VMPROTECT_SDK_PATH\s+"[^"]+"\)', 'set(VMPROTECT_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vmp-disabled")')
 
-          # The current client integrates Sentinel from source; do not require the
-          # old prebuilt WhipAntiDebug.lib which is absent from a clean runner.
-          $c = [regex]::Replace($c, '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES.*?\)\s*', '')
-          $c = [regex]::Replace($c, '(?m)^\s*WhipAntiDebug\s*
-
-          "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # DEV_STANDALONE portability: use stb_truetype because this archive ships\n          # FreeType headers but no freetype.lib.\n          $c = $c.Replace('imgui_tables.cpp imgui_widgets.cpp imgui_freetype.cpp', 'imgui_tables.cpp imgui_widgets.cpp')\n\n          # Sentinel is integrated from source. Avoid the missing legacy prebuilt\n          # WhipAntiDebug.lib and compile the two implementation units it needs.\n          $c = [regex]::Replace($c, '(?s)add_library\\(WhipAntiDebug STATIC IMPORTED\\)\\s*set_target_properties\\(WhipAntiDebug PROPERTIES.*?\\)\\s*', '')\n          $c = [regex]::Replace($c, '(?m)^\\s*WhipAntiDebug\\s*$', '')\n          $c += \"`ntarget_sources(WhipClient PRIVATE $anti/antidebug/syscall_bridge.cpp $anti/antidebug/tls_callback.c)`n\"\n\n          Set-Content -Path $p -Value $c\n\n          "WHIP_SYS=$sys" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_NEXUS=$nexus" | Out-File -FilePath $env:GITHUB_ENV -Append
           "WHIP_CLIENT=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VMP_STUB=$stub" | Out-File -FilePath $env:GITHUB_ENV -Append
