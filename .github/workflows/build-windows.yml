@@ -11,9 +11,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-
     steps:
-      - name: Checkout
+      - name: Checkout CI repo
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -22,87 +21,111 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Download Whip sources
+      - name: Fetch complete Whip source
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          git clone --depth 1 https://github.com/astunm/whip-client-source.git upstream
 
-          function Get-MediaFireFile([string]$PageUrl, [string]$Output) {
-            Write-Host "Opening $PageUrl"
-            $headers = @{ "User-Agent" = "Mozilla/5.0" }
-            $page = Invoke-WebRequest -Uri $PageUrl -Headers $headers -UseBasicParsing
-            $m = [regex]::Match($page.Content, 'id="downloadButton"[^>]*href="([^"]+)"')
-            if (-not $m.Success) {
-              $m = [regex]::Match($page.Content, 'href="(https://download[^"]+)"')
-            }
-            if (-not $m.Success) { throw "Could not resolve MediaFire direct download link for $PageUrl" }
-            $url = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
-            Invoke-WebRequest -Uri $url -Headers $headers -OutFile $Output
-          }
-
-          New-Item -ItemType Directory -Force external | Out-Null
-          Get-MediaFireFile "https://www.mediafire.com/file/l7qscbgkik2laas/WhipClient.rar/file" "external/WhipClient.rar"
-          Get-MediaFireFile "https://www.mediafire.com/file/6nttk4lsxf8tqx3/WhipLoader.rar/file" "external/WhipLoader.rar"
-          & "C:\Program Files\7-Zip\7z.exe" x "external/WhipClient.rar" "-oexternal/WhipClient" -y
-          & "C:\Program Files\7-Zip\7z.exe" x "external/WhipLoader.rar" "-oexternal/WhipLoader" -y
-
-      - name: Locate client
-        id: locate
+      - name: Build WhipSysCall
         shell: pwsh
         run: |
-          $candidate = Get-ChildItem external/WhipClient -Recurse -Filter CMakeLists.txt |
-            Where-Object { (Get-Content $_.FullName -Raw) -match 'project\(WhipClient' } |
-            Select-Object -First 1
-          if (-not $candidate) { throw "WhipClient CMakeLists.txt not found." }
-          $dir = $candidate.Directory.FullName
-          Write-Host "WhipClient source: $dir"
-          "client_dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          cmake -S "$sys" -B deps-build/syscall -G "Visual Studio 17 2022" -A x64
+          cmake --build deps-build/syscall --config Release --parallel
+          $lib = Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1
+          if (-not $lib) { throw "WhipSysCall.lib was not produced" }
+          New-Item -ItemType Directory -Force "$sys/cmake-build-release" | Out-Null
+          Copy-Item $lib.FullName "$sys/cmake-build-release/WhipSysCall.lib" -Force
+          Write-Host "WhipSysCall: $($lib.FullName)"
 
-      - name: Inspect dependency artifacts
+      - name: Build WhipNexus
         shell: pwsh
         run: |
-          Write-Host "==== dependency headers ===="
-          Get-ChildItem external -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^(WhipNexus|WhipSysCall|SyscallManager|WhipAnti.*|Sentinel).*\.(h|hpp)$' } |
-            Select-Object -First 150 -ExpandProperty FullName |
-            ForEach-Object { Write-Host $_ }
-
-          Write-Host "==== dependency libraries ===="
-          Get-ChildItem external -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^(WhipNexus|WhipSysCall|WhipAnti.*)\.lib$' } |
-            Select-Object -First 150 -ExpandProperty FullName |
-            ForEach-Object { Write-Host $_ }
-
-          Write-Host "==== likely dependency directories ===="
-          Get-ChildItem external -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'Whip(Nexus|SysCall|AntiDebug|AntiDebugger)' } |
-            Select-Object -First 150 -ExpandProperty FullName |
-            ForEach-Object { Write-Host $_ }
-
+          $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
           New-Item -ItemType Directory -Force "D:/Whip/WhipAntiDebug" | Out-Null
-          New-Item -ItemType Directory -Force "D:/Whip/WhipNexus" | Out-Null
-          New-Item -ItemType Directory -Force "D:/Whip/WhipSysCall" | Out-Null
+          cmake -S "$nexus" -B deps-build/nexus -G "Visual Studio 17 2022" -A x64 -DWHIPSYSCALL_DIR="$sys"
+          cmake --build deps-build/nexus --config Release --parallel
+          $lib = Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1
+          if (-not $lib) { throw "WhipNexus.lib was not produced" }
+          Write-Host "WhipNexus: $($lib.FullName)"
 
-      - name: Configure client
+      - name: Prepare portable dev client
         shell: pwsh
         run: |
-          $client = "${{ steps.locate.outputs.client_dir }}"
+          $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
+          $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $nexusLib = (Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1).FullName
+          $sysLib = (Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1).FullName
+
+          # Replace hard-coded developer paths with CI paths.
+          $cmakePath = Join-Path $client "CMakeLists.txt"
+          $cm = Get-Content $cmakePath -Raw
+          $nx = $nexus.Replace('\','/')
+          $sy = $sys.Replace('\','/')
+          $nl = $nexusLib.Replace('\','/')
+          $sl = $sysLib.Replace('\','/')
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', ('set(WHIPNEXUS_DIR "' + $nx + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', ('set(WHIPNEXUS_LIB "' + $nl + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', ('set(WHIPSYSCALL_DIR "' + $sy + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', ('set(WHIPSYSCALL_LIB "' + $sl + '")'))
+
+          # In a development build we do not need the anti-debug framework.
+          # Keep the Sentinel C++ API but replace its C bridge with harmless no-op functions.
+          $bridge = @'
+          #include <stdint.h>
+          void sentinel_bridge_init(void) {}
+          void sentinel_bridge_cleanup(void) {}
+          void sentinel_bridge_taint(unsigned char* data, unsigned int length) { (void)data; (void)length; }
+          void sentinel_bridge_recheck(void) {}
+          void sentinel_bridge_verify(void) {}
+          unsigned long long sentinel_bridge_snapshot(void) { return 0ULL; }
+          int sentinel_bridge_consume_report(char* outText, unsigned int outCap,
+                                             unsigned int* score, unsigned int* checksRun,
+                                             unsigned int* checksHit, unsigned int* checkMask,
+                                             unsigned int* flags) {
+              if (outText && outCap) outText[0] = 0;
+              if (score) *score = 0; if (checksRun) *checksRun = 0;
+              if (checksHit) *checksHit = 0; if (checkMask) *checkMask = 0;
+              if (flags) *flags = 0; return 0;
+          }
+          int sentinel_bridge_attach_poll(unsigned int* outReason) {
+              if (outReason) *outReason = 0; return 0;
+          }
+          '@
+          Set-Content -Path (Join-Path $client "src/security/Sentinel_bridge.c") -Value $bridge -Encoding utf8
+
+          # Turn the anti-debug imported library into an interface target so no .lib is required.
+          $cm = [regex]::Replace(
+            $cm,
+            '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES\s*IMPORTED_LOCATION "[^"]*"\s*INTERFACE_INCLUDE_DIRECTORIES "[^"]*"\s*\)',
+            'add_library(WhipAntiDebug INTERFACE)'
+          )
+          Set-Content -Path $cmakePath -Value $cm -Encoding utf8
+          Write-Host "Portable client prepared at $client"
+
+      - name: Configure WhipClient
+        shell: pwsh
+        run: |
+          $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
           cmake -S "$client" -B build -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF
 
-      - name: Build client
+      - name: Build WhipClient
         shell: pwsh
         run: |
           cmake --build build --config Release --parallel
 
-      - name: Collect DLL
+      - name: Collect artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
           $dll = Get-ChildItem build -Recurse -Filter WhipClient.dll | Select-Object -First 1
-          if (-not $dll) { throw "WhipClient.dll was not produced." }
+          if (-not $dll) { throw "WhipClient.dll was not produced" }
           Copy-Item $dll.FullName artifact/WhipClient.dll
           $pdb = Get-ChildItem build -Recurse -Filter WhipClient.pdb | Select-Object -First 1
           if ($pdb) { Copy-Item $pdb.FullName artifact/WhipClient.pdb }
+          Get-ChildItem artifact
 
       - name: Upload WhipClient
         uses: actions/upload-artifact@v4
