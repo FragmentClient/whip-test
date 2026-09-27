@@ -1,0 +1,166 @@
+name: Build Whip Forge Bootstrap
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'forge-bootstrap/**'
+      - '.github/workflows/build-forge-bootstrap.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v4
+
+      - name: Setup Java 8
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Fetch complete Whip source
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/astunm/whip-client-source.git upstream
+
+      - name: Build WhipSysCall
+        shell: pwsh
+        run: |
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $invoker = Join-Path $sys "src/SyscallInvoker.cpp"
+          $src = Get-Content $invoker -Raw
+          $src = $src.Replace('VMProtectBeginMutation("SyscallInvokerImpl_SyscallShellcode_SetSSN");','')
+          $src = $src.Replace('VMProtectEnd();','')
+          Set-Content -Path $invoker -Value $src -Encoding utf8
+          cmake -S "$sys" -B deps-build/syscall -G "Visual Studio 17 2022" -A x64
+          cmake --build deps-build/syscall --config Release --parallel
+          $lib = Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1
+          if (-not $lib) { throw "WhipSysCall.lib was not produced" }
+          New-Item -ItemType Directory -Force "$sys/cmake-build-release" | Out-Null
+          Copy-Item $lib.FullName "$sys/cmake-build-release/WhipSysCall.lib" -Force
+
+      - name: Build WhipNexus
+        shell: pwsh
+        run: |
+          $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $anti = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path
+
+          $prefix = @'
+          #ifndef VMProtectBeginUltra
+          #define VMProtectBeginUltra(x) ((void)0)
+          #define VMProtectBeginMutation(x) ((void)0)
+          #define VMProtectEnd() ((void)0)
+          #endif
+          '@
+
+          Get-ChildItem (Join-Path $nexus "src") -Recurse -Filter *.cpp | ForEach-Object {
+            $body = Get-Content $_.FullName -Raw
+            Set-Content -Path $_.FullName -Value ($prefix + [Environment]::NewLine + $body) -Encoding utf8
+          }
+
+          cmake -S "$nexus" -B deps-build/nexus -G "Visual Studio 17 2022" -A x64 -DWHIPSYSCALL_DIR="$sys" -DWHIPANTIDEBUG_DIR="$anti"
+          cmake --build deps-build/nexus --config Release --parallel
+          $lib = Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1
+          if (-not $lib) { throw "WhipNexus.lib was not produced" }
+
+      - name: Prepare portable standalone client
+        shell: pwsh
+        run: |
+          $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
+          $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
+          $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
+          $nexusLib = (Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1).FullName
+          $sysLib = (Get-ChildItem deps-build/syscall -Recurse -Filter WhipSysCall.lib | Select-Object -First 1).FullName
+
+          $cmakePath = Join-Path $client "CMakeLists.txt"
+          $cm = Get-Content $cmakePath -Raw
+          $cm = $cm.Replace('imgui_tables.cpp imgui_widgets.cpp imgui_freetype.cpp',
+                            'imgui_tables.cpp imgui_widgets.cpp')
+
+          $nx = $nexus.Replace('\','/')
+          $sy = $sys.Replace('\','/')
+          $nl = $nexusLib.Replace('\','/')
+          $sl = $sysLib.Replace('\','/')
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', ('set(WHIPNEXUS_DIR "' + $nx + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', ('set(WHIPNEXUS_LIB "' + $nl + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', ('set(WHIPSYSCALL_DIR "' + $sy + '")'))
+          $cm = [regex]::Replace($cm, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', ('set(WHIPSYSCALL_LIB "' + $sl + '")'))
+
+          $bridge = @'
+          #include <stdint.h>
+          void sentinel_bridge_init(void) {}
+          void sentinel_bridge_cleanup(void) {}
+          void sentinel_bridge_taint(unsigned char* data, unsigned int length) { (void)data; (void)length; }
+          void sentinel_bridge_recheck(void) {}
+          void sentinel_bridge_verify(void) {}
+          unsigned long long sentinel_bridge_snapshot(void) { return 0ULL; }
+          int sentinel_bridge_consume_report(char* outText, unsigned int outCap,
+                                             unsigned int* score, unsigned int* checksRun,
+                                             unsigned int* checksHit, unsigned int* checkMask,
+                                             unsigned int* flags) {
+              if (outText && outCap) outText[0] = 0;
+              if (score) *score = 0; if (checksRun) *checksRun = 0;
+              if (checksHit) *checksHit = 0; if (checkMask) *checkMask = 0;
+              if (flags) *flags = 0; return 0;
+          }
+          int sentinel_bridge_attach_poll(unsigned int* outReason) {
+              if (outReason) *outReason = 0; return 0;
+          }
+          '@
+          Set-Content -Path (Join-Path $client "src/security/Sentinel_bridge.c") -Value $bridge -Encoding utf8
+
+          $cm = [regex]::Replace(
+            $cm,
+            '(?s)add_library\(WhipAntiDebug STATIC IMPORTED\)\s*set_target_properties\(WhipAntiDebug PROPERTIES\s*IMPORTED_LOCATION "[^"]*"\s*INTERFACE_INCLUDE_DIRECTORIES "[^"]*"\s*\)',
+            'add_library(WhipAntiDebug INTERFACE)'
+          )
+          Set-Content -Path $cmakePath -Value $cm -Encoding utf8
+
+      - name: Configure WhipClient
+        shell: pwsh
+        run: |
+          $client = (Resolve-Path "upstream/WhipClient-master/WhipClient-master").Path
+          $frameworkHeaders = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path.Replace('\','/')
+          cmake -S "$client" -B build-client -G "Visual Studio 17 2022" -A x64 -DWHIP_BUILD_MODE=DEV_STANDALONE -DBUILD_WITH_VMPROTECT=OFF "-DCMAKE_CXX_FLAGS=/I$frameworkHeaders"
+
+      - name: Build WhipClient
+        shell: pwsh
+        run: |
+          cmake --build build-client --config Release --parallel
+
+      - name: Download Forge 1.8.9 compile jar
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://maven.minecraftforge.net/net/minecraftforge/forge/1.8.9-11.15.1.2318-1.8.9/forge-1.8.9-11.15.1.2318-1.8.9-universal.jar" -OutFile forge-1.8.9.jar
+
+      - name: Build bootstrap mod
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force mod-build/classes | Out-Null
+          New-Item -ItemType Directory -Force mod-build/classes/native | Out-Null
+
+          & javac -source 8 -target 8 -cp forge-1.8.9.jar -d mod-build/classes forge-bootstrap/src/main/java/fragment/whipbootstrap/WhipBootstrapMod.java
+          if ($LASTEXITCODE -ne 0) { throw "javac failed" }
+
+          Copy-Item forge-bootstrap/src/main/resources/mcmod.info mod-build/classes/mcmod.info
+          $dll = Get-ChildItem build-client -Recurse -Filter WhipClient.dll | Select-Object -First 1
+          if (-not $dll) { throw "WhipClient.dll was not produced" }
+          Copy-Item $dll.FullName mod-build/classes/native/WhipClient.dll
+
+          Push-Location mod-build/classes
+          & jar cf ../../WhipClient-Forge-1.8.9.jar .
+          if ($LASTEXITCODE -ne 0) { throw "jar packaging failed" }
+          Pop-Location
+
+      - name: Upload Forge mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhipClient-Forge-1.8.9
+          path: WhipClient-Forge-1.8.9.jar
+          if-no-files-found: error
