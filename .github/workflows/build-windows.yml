@@ -48,8 +48,23 @@ jobs:
         run: |
           $nexus = (Resolve-Path "upstream/WhipNexus-Master/WhipNexus-Master").Path
           $sys = (Resolve-Path "upstream/WhipSysCall-master/WhipSysCall-master").Path
-          New-Item -ItemType Directory -Force "D:/Whip/WhipAntiDebug" | Out-Null
-          cmake -S "$nexus" -B deps-build/nexus -G "Visual Studio 17 2022" -A x64 -DWHIPSYSCALL_DIR="$sys"
+          $anti = (Resolve-Path "upstream/WhipAntiDebug-master/WhipAntiDebug-master").Path
+
+          # The leaked/open source tree has VMProtect calls outside its SDK guards.
+          # For this unprotected development build, compile those markers as no-ops.
+          $prefix = @'
+          #ifndef VMProtectBeginUltra
+          #define VMProtectBeginUltra(x) ((void)0)
+          #define VMProtectBeginMutation(x) ((void)0)
+          #define VMProtectEnd() ((void)0)
+          #endif
+          '@
+          Get-ChildItem (Join-Path $nexus "src") -Recurse -Filter *.cpp | ForEach-Object {
+            $body = Get-Content $_.FullName -Raw
+            Set-Content -Path $_.FullName -Value ($prefix + [Environment]::NewLine + $body) -Encoding utf8
+          }
+
+          cmake -S "$nexus" -B deps-build/nexus -G "Visual Studio 17 2022" -A x64 -DWHIPSYSCALL_DIR="$sys" -DWHIPANTIDEBUG_DIR="$anti"
           cmake --build deps-build/nexus --config Release --parallel
           $lib = Get-ChildItem deps-build/nexus -Recurse -Filter WhipNexus.lib | Select-Object -First 1
           if (-not $lib) { throw "WhipNexus.lib was not produced" }
