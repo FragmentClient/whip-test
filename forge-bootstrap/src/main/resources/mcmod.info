@@ -1,0 +1,10 @@
+[
+  {
+    "modid": "whipbootstrap",
+    "name": "WhipClient Bootstrap",
+    "description": "Loads the local WhipClient native client inside Minecraft 1.8.9 without an external injector.",
+    "version": "1.0.0",
+    "mcversion": "1.8.9",
+    "authorList": ["FragmentClient"]
+  }
+]
