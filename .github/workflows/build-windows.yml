@@ -53,12 +53,12 @@ jobs:
           $stubLines = @(
             "#pragma once",
             "#ifndef BUILD_WITH_VMPROTECT",
-            "static __inline void VMProtectBegin(const char*) {}",
-            "static __inline void VMProtectBeginVirtualization(const char*) {}",
-            "static __inline void VMProtectBeginMutation(const char*) {}",
-            "static __inline void VMProtectBeginUltra(const char*) {}",
-            "static __inline void VMProtectBeginVirtualizationLockByKey(const char*) {}",
-            "static __inline void VMProtectBeginUltraLockByKey(const char*) {}",
+            "static __inline void VMProtectBegin(const char* name) { (void)name; }",
+            "static __inline void VMProtectBeginVirtualization(const char* name) { (void)name; }",
+            "static __inline void VMProtectBeginMutation(const char* name) { (void)name; }",
+            "static __inline void VMProtectBeginUltra(const char* name) { (void)name; }",
+            "static __inline void VMProtectBeginVirtualizationLockByKey(const char* name) { (void)name; }",
+            "static __inline void VMProtectBeginUltraLockByKey(const char* name) { (void)name; }",
             "static __inline void VMProtectEnd(void) {}",
             "#endif"
           )
@@ -99,7 +99,7 @@ jobs:
           $p = "$client/CMakeLists.txt"
           $c = Get-Content $p -Raw
           $c = [regex]::Replace($c, 'set\(WHIPNEXUS_DIR\s+"[^"]+"\)', "set(WHIPNEXUS_DIR `"$nexus`")")
-          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/WhipNexus.lib")')
+          $c = [regex]::Replace($c, 'set\(WHIPNEXUS_LIB\s+"[^"]+"\)', 'set(WHIPNEXUS_LIB "${WHIPNEXUS_DIR}/cmake-build-release/bin/Release/WhipNexus.lib")')
           $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_DIR\s+"[^"]+"\)', "set(WHIPSYSCALL_DIR `"$sys`")")
           $c = [regex]::Replace($c, 'set\(WHIPSYSCALL_LIB\s+"[^"]+"\)', 'set(WHIPSYSCALL_LIB "${WHIPSYSCALL_DIR}/cmake-build-release/WhipSysCall.lib")')
           $c = [regex]::Replace($c, 'set\(WHIPANTIDEBUG_DIR\s+"[^"]+"\)', "set(WHIPANTIDEBUG_DIR `"$anti`")")
